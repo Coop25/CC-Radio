@@ -41,7 +41,7 @@ func main() {
 
 	client.RegisterWS(b)
 	// 6) Instantiate Discord bot just like everything else
-	dg, err := client.NewDiscordBot(cfg, b, fetcher)
+	dg, err := client.NewDiscordBot(cfg, b, fetcher, pb, pl)
 	if err != nil {
 		log.Fatalf("Discord bot init failed: %v", err)
 	}

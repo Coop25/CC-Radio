@@ -25,9 +25,25 @@ var commands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
+		Name:        "addplaylist",
+		Description: "Add a playlist by url to the master playlist",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "url",
+				Description: "The youtube url",
+				Required:    true,
+			},
+		},
+	},
+	{
 		Name:        "skip",
 		Description: "Skip the currently playing song",
 	},
+    {
+        Name:        "saveplaylist",
+        Description: "Manually save the current playlist to Pastebin",
+    },
 }
 
 // NewDiscordBot initializes, registers, and opens the Discord session.
@@ -35,6 +51,8 @@ func NewDiscordBot(
 	cfg *config.Config,
 	b *manager.Broadcaster,
 	fetcher accessor.Fetcher,
+    pb *accessor.PastebinAccessor,
+    pl *accessor.Playlist,
 ) (*discordgo.Session, error) {
 
 	dg, err := discordgo.New("Bot " + cfg.DiscordToken)
@@ -65,6 +83,25 @@ func NewDiscordBot(
 				},
 			})
 
+		case "addplaylist":
+			songID := data.Options[0].StringValue()
+			if err := fetcher.LoadPlaylist(songID); err != nil {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: fmt.Sprintf("❌ Could not add %q: %v", songID, err),
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: fmt.Sprintf("✅ Queued song %q!", songID),
+				},
+			})
+
 		case "skip":
 			b.Skip()
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -73,7 +110,26 @@ func NewDiscordBot(
 					Content: "⏭️ Skipped current track.",
 				},
 			})
+		case "saveplaylist":
+            pasteID, err := pb.SavePlaylist(pl, "Manual Save")
+            if err != nil {
+                s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+                    Type: discordgo.InteractionResponseChannelMessageWithSource,
+                    Data: &discordgo.InteractionResponseData{
+                        Content: fmt.Sprintf("❌ Save failed: %v", err),
+                        Flags:   discordgo.MessageFlagsEphemeral,
+                    },
+                })
+            } else {
+                s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+                    Type: discordgo.InteractionResponseChannelMessageWithSource,
+                    Data: &discordgo.InteractionResponseData{
+                        Content: fmt.Sprintf("✅ Playlist saved! Paste ID: `%s`", pasteID),
+                    },
+                })
+            }
 		}
+        
 	})
 
 	if err := dg.Open(); err != nil {
