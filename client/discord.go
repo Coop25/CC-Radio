@@ -3,7 +3,7 @@ package client
 
 import (
 	"fmt"
-	"os"
+	"log"
 
 	"github.com/Coop25/CC-Radio/accessor"
 	"github.com/Coop25/CC-Radio/config"
@@ -25,7 +25,7 @@ var commands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
-		Name:        "addradiosegment",
+		Name:        "add-radio-segment",
 		Description: "Add a Radio Segment by url to the radio segment playlist",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
@@ -80,6 +80,36 @@ func NewDiscordBot(
 		return nil, fmt.Errorf("discordgo.New: %w", err)
 	}
 
+	if err := dg.Open(); err != nil {
+		return nil, fmt.Errorf("dg.Open: %w", err)
+	}
+
+	appID := dg.State.User.ID
+	guildID := cfg.DiscordGuildID
+
+	// 1) DELETE all existing guild commands
+	existing, err := dg.ApplicationCommands(appID, guildID)
+	if err != nil {
+		log.Printf("⚠️  could not list existing commands: %v", err)
+	} else {
+		for _, cmd := range existing {
+			if err := dg.ApplicationCommandDelete(appID, guildID, cmd.ID); err != nil {
+				log.Printf("⚠️  failed to delete command %s: %v", cmd.Name, err)
+			} else {
+				log.Printf("🗑️  deleted existing command %s", cmd.Name)
+			}
+		}
+	}
+
+	// 2) REGISTER your commands afresh
+	for _, cmd := range commands {
+		if _, err := dg.ApplicationCommandCreate(appID, guildID, cmd); err != nil {
+			log.Printf("❌ cannot create '%s' command: %v", cmd.Name, err)
+		} else {
+			log.Printf("✅ registered command %s", cmd.Name)
+		}
+	}
+
 	// Interaction handler
 	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		data := i.ApplicationCommandData()
@@ -114,7 +144,7 @@ func NewDiscordBot(
 					Content: fmt.Sprintf("✅ Queued song %q!", songID),
 				},
 			})
-		case "addradiosegment":
+		case "add-radio-segment":
 			songID := data.Options[0].StringValue()
 			if err := fetcher.LoadRadioSegment(songID); err != nil {
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -240,17 +270,6 @@ func NewDiscordBot(
 		}
 
 	})
-
-	if err := dg.Open(); err != nil {
-		return nil, fmt.Errorf("dg.Open: %w", err)
-	}
-
-	appID := dg.State.User.ID
-	for _, cmd := range commands {
-		if _, err := dg.ApplicationCommandCreate(appID, cfg.DiscordGuildID, cmd); err != nil {
-			fmt.Fprintf(os.Stderr, "unable to create command %s: %v\n", cmd.Name, err)
-		}
-	}
 
 	return dg, nil
 }
