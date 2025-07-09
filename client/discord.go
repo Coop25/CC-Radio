@@ -61,7 +61,7 @@ var commands = []*discordgo.ApplicationCommand{
 		Description: "Remove the currently-playing track from the queue",
 	},
 	{
-		Name:        "forceRadioSegmentNext",
+		Name:        "forceSegment",
 		Description: "force a radio segment to play next, may take 2 songs",
 	},
 }
@@ -184,7 +184,7 @@ func NewDiscordBot(
 				},
 			})
 
-		case "forceRadioSegmentNext":
+		case "forceSegment":
 			pl.ForceNextRadioSegment()
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
