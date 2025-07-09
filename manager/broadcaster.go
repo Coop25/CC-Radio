@@ -132,8 +132,7 @@ func (b *Broadcaster) Start(ctx context.Context) {
 					log.Printf("[Broadcaster] No chunks for current track, skipping tick")
 					continue
 				}
-				log.Printf("[Broadcaster] Ticker tick: sending chunk %d/%d of %s",
-					idx+1, len(currSlices), current.ID)
+				// log.Printf("[Broadcaster] Ticker tick: sending chunk %d/%d of %s", idx+1, len(currSlices), current.ID)
 				b.mu.Lock()
 				for conn := range b.conns {
 					if err := conn.WriteMessage(websocket.BinaryMessage, currSlices[idx]); err != nil {

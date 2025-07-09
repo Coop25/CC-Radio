@@ -1,151 +1,211 @@
 package accessor
 
 import (
-	"math/rand"
-	"sync"
-	"time"
+    "math/rand"
+    "sync"
+    "time"
 
-	"github.com/Coop25/CC-Radio/config"
+    "github.com/Coop25/CC-Radio/config"
 )
 
 type Song struct {
-	ID       string
-	Name     string
-	Artist   string
-	URL      string
-	Duration time.Duration
+    ID       string
+    Name     string
+    Artist   string
+    URL      string
+    Duration time.Duration
 }
 
 type Playlist struct {
-	mu         sync.Mutex
-	queue      []Song // full master list
-	remaining  []Song // songs left in this random cycle
-	randomNext []Song
-	lastRandom time.Time
-	cooldown   time.Duration
-	maxChance  float64
-	rng        *rand.Rand
-	NewSongCh  chan struct{}
-	lastSongID string
+    mu             sync.Mutex
+    queue          []Song    // master list
+    recentHistory  []string  // for queue: last ⌊len(queue)/2⌋
+    randomNext     []Song    // permanent radio segment list
+    randomHistory  []string  // last ⌊len(randomNext)/2⌋ segments
+    lastRandom     time.Time
+    cooldown       time.Duration
+    maxChance      float64
+    rng            *rand.Rand
+    NewSongCh      chan struct{}
+    forceNextRadio bool
 }
 
 func NewPlaylist(cfg *config.Config) *Playlist {
-	src := rand.NewSource(time.Now().UnixNano())
-	return &Playlist{
-		queue:      make([]Song, 0),
-		remaining:  nil,
-		randomNext: make([]Song, 0),
-		cooldown:   cfg.RandomCooldown,
-		maxChance:  cfg.RandomMaxChance,
-		rng:        rand.New(src),
-		NewSongCh:  make(chan struct{}, 1),
-	}
+    src := rand.NewSource(time.Now().UnixNano())
+    return &Playlist{
+        cooldown:   cfg.RandomCooldown,
+        maxChance:  cfg.RandomMaxChance,
+        rng:        rand.New(src),
+        NewSongCh:  make(chan struct{}, 1),
+    }
 }
 
-// Remove deletes every occurrence of the given song ID from both
-// the main queue and the randomNext slice.
+func (p *Playlist) Add(song Song) {
+    p.mu.Lock()
+    wasEmpty := len(p.queue) == 0
+    p.queue = append(p.queue, song)
+    p.mu.Unlock()
+
+    if wasEmpty {
+        select { case p.NewSongCh <- struct{}{}: default: }
+    }
+}
+
+func (p *Playlist) AddRadio(song Song) {
+    p.mu.Lock()
+    wasEmpty := len(p.randomNext) == 0
+    p.randomNext = append(p.randomNext, song)
+    p.mu.Unlock()
+
+    if wasEmpty {
+        select { case p.NewSongCh <- struct{}{}: default: }
+    }
+}
+
 func (p *Playlist) Remove(id string) {
     p.mu.Lock()
     defer p.mu.Unlock()
 
-    // Filter main queue
-    newQ := p.queue[:0]
+    // remove from queue
+    q := p.queue[:0]
     for _, s := range p.queue {
         if s.ID != id {
-            newQ = append(newQ, s)
+            q = append(q, s)
         }
     }
-    p.queue = newQ
+    p.queue = q
 
-    // Filter randomNext
-    newR := p.randomNext[:0]
+    // remove from randomNext
+    r := p.randomNext[:0]
     for _, s := range p.randomNext {
         if s.ID != id {
-            newR = append(newR, s)
+            r = append(r, s)
         }
     }
-    p.randomNext = newR
+    p.randomNext = r
+
+    // also clear any history entries for that ID
+    p.recentHistory = filterOut(p.recentHistory, id)
+    p.randomHistory = filterOut(p.randomHistory, id)
 }
 
-
-func (p *Playlist) Add(song Song) {
-	p.mu.Lock()
-	wasEmpty := len(p.queue) == 0
-	// append to master list
-	p.queue = append(p.queue, song)
-	// also make it available in the current cycle
-	p.remaining = append(p.remaining, song)
-	p.mu.Unlock()
-
-	if wasEmpty {
-		select {
-		case p.NewSongCh <- struct{}{}:
-		default:
-		}
-	}
-}
-
-func (p *Playlist) Shuffle() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	// reset remaining to a fresh copy of queue
-	p.remaining = append([]Song(nil), p.queue...)
-	// shuffle that slice
-	p.rng.Shuffle(len(p.remaining), func(i, j int) {
-		p.remaining[i], p.remaining[j] = p.remaining[j], p.remaining[i]
-	})
-	// clear lastSongID so the first pick won't be blocked
-	p.lastSongID = ""
-}
-
-// Next returns either a randomNext bump (unchanged) or a truly random
-// song from the main queue, never repeating the same ID twice in a row.
+// Next returns either a forced‐next/radio‐segment, a randomNext bump,
+// or a random master‐queue song.  Both lists cycle without repeats
+// until half their items have played.
 func (p *Playlist) Next() (Song, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+    p.mu.Lock()
+    defer p.mu.Unlock()
 
-	now := time.Now()
-	// 1) randomNext bump
-	if now.Sub(p.lastRandom) >= p.cooldown && len(p.randomNext) > 0 {
-		idx := p.rng.Intn(len(p.randomNext))
-		song := p.randomNext[idx]
-		// drop it from randomNext
-		p.randomNext = append(p.randomNext[:idx], p.randomNext[idx+1:]...)
-		p.lastRandom = now
-		if song.ID != p.lastSongID {
-			p.lastSongID = song.ID
-			return song, true
-		}
-		// if it was the same, we fall back to the main queue
-	}
+    now := time.Now()
 
-	// 2) main queue random cycle
-	if len(p.remaining) == 0 {
-		// refill and shuffle for a new cycle
-		p.remaining = append([]Song(nil), p.queue...)
-		p.rng.Shuffle(len(p.remaining), func(i, j int) {
-			p.remaining[i], p.remaining[j] = p.remaining[j], p.remaining[i]
-		})
-	}
+    // 0) Forced radio segment
+    if p.forceNextRadio && len(p.randomNext) > 0 {
+        song := p.pickRandomSegment()
+        p.forceNextRadio = false
+        p.lastRandom = now
+        return song, true
+    }
 
-	if len(p.remaining) == 0 {
-		return Song{}, false
-	}
+    // 1) Regular randomNext bump
+    if now.Sub(p.lastRandom) >= p.cooldown && len(p.randomNext) > 0 {
+        song := p.pickRandomSegment()
+        p.lastRandom = now
+        return song, true
+    }
 
-	// pick a random index in remaining
-	idx := p.rng.Intn(len(p.remaining))
-	song := p.remaining[idx]
+    // 2) Master queue
+    if len(p.queue) == 0 {
+        return Song{}, false
+    }
+    song := p.pickRandomFromQueue()
+    return song, true
+}
 
-	// if it would repeat, and there’s >1 left, pick the next different one
-	if song.ID == p.lastSongID && len(p.remaining) > 1 {
-		// swap it with the next slot (mod len)
-		idx2 := (idx + 1) % len(p.remaining)
-		song = p.remaining[idx2]
-		idx = idx2
-	}
+// pickRandomSegment picks one from randomNext subject to randomHistory rules.
+func (p *Playlist) pickRandomSegment() Song {
+    // build allowed pool
+    cold := make(map[string]struct{}, len(p.randomHistory))
+    for _, id := range p.randomHistory {
+        cold[id] = struct{}{}
+    }
+    allowed := p.randomNext[:0]
+    for _, s := range p.randomNext {
+        if _, isCold := cold[s.ID]; !isCold {
+            allowed = append(allowed, s)
+        }
+    }
+    if len(allowed) == 0 {
+        // everyone’s cold → reset history
+        p.randomHistory = nil
+        allowed = append([]Song(nil), p.randomNext...)
+    }
+    // pick uniformly
+    song := allowed[p.rng.Intn(len(allowed))]
+    p.recordRandomHistory(song.ID)
+    return song
+}
 
-	// remove from remaining
-	p.remaining = append(p.remaining[:idx], p.remaining[idx+1:]...)
-	p.lastSongID = song.ID
-	return song, true
+// pickRandomFromQueue picks one from queue subject to recentHistory rules.
+func (p *Playlist) pickRandomFromQueue() Song {
+    // build allowed pool
+    cold := make(map[string]struct{}, len(p.recentHistory))
+    for _, id := range p.recentHistory {
+        cold[id] = struct{}{}
+    }
+    allowed := p.queue[:0]
+    for _, s := range p.queue {
+        if _, isCold := cold[s.ID]; !isCold {
+            allowed = append(allowed, s)
+        }
+    }
+    if len(allowed) == 0 {
+        // reset queue history
+        p.recentHistory = nil
+        allowed = append([]Song(nil), p.queue...)
+    }
+    song := allowed[p.rng.Intn(len(allowed))]
+    p.recordQueueHistory(song.ID)
+    return song
+}
+
+// recordQueueHistory appends id, keeping ≤ floor(len(queue)/2)
+func (p *Playlist) recordQueueHistory(id string) {
+    p.recentHistory = append(p.recentHistory, id)
+    maxLen := len(p.queue) / 2
+    if maxLen < 1 {
+        maxLen = 1
+    }
+    if len(p.recentHistory) > maxLen {
+        p.recentHistory = p.recentHistory[len(p.recentHistory)-maxLen:]
+    }
+}
+
+// recordRandomHistory appends id, keeping ≤ floor(len(randomNext)/2)
+func (p *Playlist) recordRandomHistory(id string) {
+    p.randomHistory = append(p.randomHistory, id)
+    maxLen := len(p.randomNext) / 2
+    if maxLen < 1 {
+        maxLen = 1
+    }
+    if len(p.randomHistory) > maxLen {
+        p.randomHistory = p.randomHistory[len(p.randomHistory)-maxLen:]
+    }
+}
+
+// ForceNextRadioSegment makes the very next Next() return from randomNext.
+func (p *Playlist) ForceNextRadioSegment() {
+    p.mu.Lock()
+    p.forceNextRadio = true
+    p.mu.Unlock()
+}
+
+// helper to filter out an ID from a string slice
+func filterOut(slice []string, id string) []string {
+    out := slice[:0]
+    for _, x := range slice {
+        if x != id {
+            out = append(out, x)
+        }
+    }
+    return out
 }

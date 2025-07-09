@@ -21,11 +21,18 @@ type PlaylistItem struct {
 	Artist string `json:"artist"` // raw: "MM:SS ArtistName…"
 }
 
+type rawSong struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Artist string `json:"artist"` // "MM:SS � ArtistName"
+}
+
 // Fetcher knows how to GET raw audio bytes by song ID.
 type Fetcher interface {
 	FetchBytes(songID string) ([]byte, error)
 	LoadPlaylist(playlistURL string) error
 	LoadSong(requestURL string) error
+	LoadRadioSegment(requestURL string) error
 }
 
 // httpFetcher implements Fetcher over HTTP.
@@ -110,11 +117,7 @@ func (h *httpFetcher) LoadPlaylist(playlistURL string) error {
 
 	// parse JSON
 	var raws []struct {
-		PlaylistItems []struct {
-			ID     string `json:"id"`
-			Name   string `json:"name"`
-			Artist string `json:"artist"` // raw: "MM:SS ArtistName…"
-		} `json:"playlist_items"`
+		PlaylistItems []rawSong `json:"playlist_items"`
 	}
 	if err := json.Unmarshal(data, &raws); err != nil {
 		return fmt.Errorf("invalid playlist JSON: %w", err)
@@ -123,28 +126,17 @@ func (h *httpFetcher) LoadPlaylist(playlistURL string) error {
 		return fmt.Errorf("no playlist data in response")
 	}
 
-	for _, item := range raws[0].PlaylistItems {
-		// Artist field starts with "MM:SS " then real artist name
-		parts := strings.SplitN(item.Artist, " ", 2)
-		if len(parts) < 2 {
-			continue
-		}
-		dur, err := parseDuration(parts[0])
-		if err != nil {
-			continue
-		}
+	songs, err := parseSongs(raws[0].PlaylistItems)
+	if err != nil {
+		log.Printf("[Fetcher] ReadAll error: %v", err)
+		return fmt.Errorf("reading load songs response: %w", err)
+	}
 
-		s := Song{
-			ID:       item.ID,
-			Name:     item.Name,
-			Artist:   parts[1],
-			URL:      "", // still only ID→FetchBytes
-			Duration: dur,
-		}
+	// enqueue
+	for _, s := range songs {
 		h.playlist.Add(s)
 	}
 
-	h.playlist.Shuffle()
 	return nil
 }
 
@@ -185,40 +177,111 @@ func (h *httpFetcher) LoadSong(requestURL string) error {
 
 	log.Printf("[Fetcher] Response status: %s, body length: %d", resp.Status, len(data))
 
-	// parse JSON
-	var raws []struct {
-		ID     string `json:"id"`
-		Name   string `json:"name"`
-		Artist string `json:"artist"` // "MM:SS � ArtistName"
-	}
-	if err := json.Unmarshal(data, &raws); err != nil {
+	var rawParse []rawSong
+	if err := json.Unmarshal(data, &rawParse); err != nil {
 		log.Printf("[Fetcher] JSON unmarshal error: %v", err)
 		return fmt.Errorf("invalid songs JSON: %w", err)
 	}
 
-	// convert & enqueue
-	for _, item := range raws {
-		// Artist field starts with "MM:SS " then real artist name
-		parts := strings.SplitN(item.Artist, " ", 2)
-		if len(parts) < 2 {
-			continue
-		}
-		dur, err := parseDuration(parts[0])
-		if err != nil {
-			log.Printf("[Fetcher] skip %s: invalid duration in %q (%v)", item.ID, item.Artist, err)
-			continue
-		}
-		s := Song{
-			ID:       item.ID,
-			Name:     item.Name,
-			Artist:   item.Artist,
-			URL:      "", // still using ID→FetchBytes
-			Duration: dur,
-		}
+	songs, err := parseSongs(rawParse)
+	if err != nil {
+		log.Printf("[Fetcher] ReadAll error: %v", err)
+		return fmt.Errorf("reading load songs response: %w", err)
+	}
+
+	// enqueue
+	for _, s := range songs {
 		h.playlist.Add(s)
 	}
 
 	return nil
+}
+
+func (h *httpFetcher) LoadRadioSegment(requestURL string) error {
+	log.Printf("[Fetcher] Fetching songs JSON from %s", requestURL)
+
+	req, err := http.NewRequest("GET", h.baseURL, nil)
+	if err != nil {
+		log.Printf("[Fetcher] NewRequest error: %v", err)
+		return fmt.Errorf("load songs: %w", err)
+	}
+	q := req.URL.Query()
+	q.Set("v", "2")
+	q.Set("search", requestURL)
+	req.URL.RawQuery = q.Encode()
+
+	req.Header = h.headers
+
+	// do request
+	resp, err := h.client.Do(req)
+	if err != nil {
+		log.Printf("[Fetcher] HTTP error: %v", err)
+		return fmt.Errorf("load radioSegment: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("load radioSegment: status %s, body %q", resp.Status, body)
+	}
+
+	// read payload
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[Fetcher] ReadAll error: %v", err)
+		return fmt.Errorf("reading load radioSegment response: %w", err)
+	}
+
+	log.Printf("[Fetcher] Response status: %s, body length: %d", resp.Status, len(data))
+
+	var rawParse []rawSong
+	if err := json.Unmarshal(data, &rawParse); err != nil {
+		log.Printf("[Fetcher] JSON unmarshal error: %v", err)
+		return fmt.Errorf("invalid radioSegment JSON: %w", err)
+	}
+
+	songs, err := parseSongs(rawParse)
+	if err != nil {
+		log.Printf("[Fetcher] ReadAll error: %v", err)
+		return fmt.Errorf("reading load radioSegment response: %w", err)
+	}
+
+	// enqueue
+	for _, s := range songs {
+		h.playlist.AddRadio(s)
+	}
+
+	return nil
+}
+
+func parseSongs(data []rawSong) ([]Song, error) {
+	// 2) Convert into []Song
+	out := make([]Song, 0, len(data))
+	for _, item := range data {
+		// split off the time prefix
+		parts := strings.SplitN(item.Artist, " ", 2)
+		if len(parts) < 1 {
+			// no timestamp? skip
+			continue
+		}
+		dur, err := parseDuration(parts[0])
+		if err != nil {
+			// malformed time? skip
+			continue
+		}
+
+		out = append(out, Song{
+			ID:       item.ID,
+			Name:     item.Name,
+			Artist:   item.Artist, // keep full artist string
+			URL:      "",          // fill in if needed
+			Duration: dur,
+		})
+	}
+	if len(out) == 0 {
+		return out, fmt.Errorf("No Songs Added")
+	}
+	return out, nil
 }
 
 // parseDuration turns "MM:SS" into time.Duration.
