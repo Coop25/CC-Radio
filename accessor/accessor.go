@@ -42,6 +42,32 @@ func NewPlaylist(cfg *config.Config) *Playlist {
 	}
 }
 
+// Remove deletes every occurrence of the given song ID from both
+// the main queue and the randomNext slice.
+func (p *Playlist) Remove(id string) {
+    p.mu.Lock()
+    defer p.mu.Unlock()
+
+    // Filter main queue
+    newQ := p.queue[:0]
+    for _, s := range p.queue {
+        if s.ID != id {
+            newQ = append(newQ, s)
+        }
+    }
+    p.queue = newQ
+
+    // Filter randomNext
+    newR := p.randomNext[:0]
+    for _, s := range p.randomNext {
+        if s.ID != id {
+            newR = append(newR, s)
+        }
+    }
+    p.randomNext = newR
+}
+
+
 func (p *Playlist) Add(song Song) {
 	p.mu.Lock()
 	wasEmpty := len(p.queue) == 0

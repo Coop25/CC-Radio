@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -16,15 +17,16 @@ import (
 )
 
 type Broadcaster struct {
-	conns    map[*websocket.Conn]struct{}
-	mu       sync.Mutex
-	interval time.Duration
-	skipCh   chan struct{}
-	playlist *accessor.Playlist
-	cancel   context.CancelFunc
-	fetcher  accessor.Fetcher
-	webhook  string
-	http     *http.Client
+	conns       map[*websocket.Conn]struct{}
+	mu          sync.Mutex
+	interval    time.Duration
+	skipCh      chan struct{}
+	playlist    *accessor.Playlist
+	cancel      context.CancelFunc
+	fetcher     accessor.Fetcher
+	webhook     string
+	http        *http.Client
+	currentSong accessor.Song // ← track what’s playing
 }
 
 // NewBroadcaster starts the ticker loop; you can call Start(ctx) to begin.
@@ -100,6 +102,7 @@ func (b *Broadcaster) Start(ctx context.Context) {
 				}
 			}
 			current = track
+			b.currentSong = current // ← remember it
 			log.Printf("[Broadcaster] Loaded initial track: ID=%s, Duration=%v", current.ID, current.Duration)
 			break
 		}
@@ -145,6 +148,7 @@ func (b *Broadcaster) Start(ctx context.Context) {
 					log.Printf("[Broadcaster] Finished %s; rotating to %s", current.ID, next.ID)
 					currSlices = nextSlices
 					current = next
+					b.currentSong = current // ← remember it
 					b.announce(current)
 
 					if nt, ok := b.playlist.Next(); ok {
@@ -160,6 +164,7 @@ func (b *Broadcaster) Start(ctx context.Context) {
 				log.Printf("[Broadcaster] ⏭ Skip received, rotating immediately")
 				currSlices = nextSlices
 				current = next
+				b.currentSong = current // ← remember it
 				b.announce(current)
 
 				if nt, ok := b.playlist.Next(); ok {
@@ -201,6 +206,20 @@ func (b *Broadcaster) Skip() {
 	case b.skipCh <- struct{}{}:
 	default:
 	}
+}
+
+func (b *Broadcaster) DeleteCurrent() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.currentSong.ID == "" {
+		return fmt.Errorf("no current song to delete")
+	}
+	id := b.currentSong.ID
+	b.playlist.Remove(id)
+	log.Printf("[Broadcaster] Deleted current song %s from queue & randomNext", id)
+	b.Skip()
+	return nil
 }
 
 func (b *Broadcaster) Register(conn *websocket.Conn) {

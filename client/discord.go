@@ -24,18 +24,18 @@ var commands = []*discordgo.ApplicationCommand{
 			},
 		},
 	},
-	{
-		Name:        "addplaylist",
-		Description: "Add a playlist by url to the master playlist",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "url",
-				Description: "The youtube url",
-				Required:    true,
-			},
-		},
-	},
+	// {
+	// 	Name:        "addplaylist",
+	// 	Description: "Add a playlist by url to the master playlist",
+	// 	Options: []*discordgo.ApplicationCommandOption{
+	// 		{
+	// 			Type:        discordgo.ApplicationCommandOptionString,
+	// 			Name:        "url",
+	// 			Description: "The youtube url",
+	// 			Required:    true,
+	// 		},
+	// 	},
+	// },
 	{
 		Name:        "skip",
 		Description: "Skip the currently playing song",
@@ -43,6 +43,10 @@ var commands = []*discordgo.ApplicationCommand{
 	{
 		Name:        "saveplaylist",
 		Description: "Manually save the current playlist to Pastebin",
+	},
+	{
+		Name:        "deletecurrent",
+		Description: "Remove the currently-playing track from the queue",
 	},
 }
 
@@ -83,7 +87,7 @@ func NewDiscordBot(
 				},
 			})
 
-		case "addplaylist":
+		case "addplaylist-Disabled":
 			songID := data.Options[0].StringValue()
 			if err := fetcher.LoadPlaylist(songID); err != nil {
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -125,6 +129,24 @@ func NewDiscordBot(
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
 						Content: "✅ Playlist saved!",
+					},
+				})
+			}
+		case "deletecurrent":
+			err := b.DeleteCurrent()
+			if err != nil {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: fmt.Sprintf("❌ %v", err),
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+			} else {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "✅ Successfully removed the current track from the queue.",
 					},
 				})
 			}
