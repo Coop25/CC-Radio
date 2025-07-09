@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -152,9 +153,11 @@ func (h *httpFetcher) LoadPlaylist(playlistURL string) error {
 }
 
 func (h *httpFetcher) LoadSong(requestURL string) error {
-	// build request
+	log.Printf("[Fetcher] Fetching songs JSON from %s", requestURL)
+
 	req, err := http.NewRequest("GET", h.baseURL, nil)
 	if err != nil {
+		log.Printf("[Fetcher] NewRequest error: %v", err)
 		return fmt.Errorf("load songs: %w", err)
 	}
 	q := req.URL.Query()
@@ -167,6 +170,7 @@ func (h *httpFetcher) LoadSong(requestURL string) error {
 	// do request
 	resp, err := h.client.Do(req)
 	if err != nil {
+		log.Printf("[Fetcher] HTTP error: %v", err)
 		return fmt.Errorf("load songs: %w", err)
 	}
 	defer resp.Body.Close()
@@ -179,8 +183,11 @@ func (h *httpFetcher) LoadSong(requestURL string) error {
 	// read payload
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[Fetcher] ReadAll error: %v", err)
 		return fmt.Errorf("reading load songs response: %w", err)
 	}
+
+	log.Printf("[Fetcher] Response status: %s, body length: %d", resp.Status, len(data))
 
 	// parse JSON
 	var raws []struct {
@@ -189,6 +196,7 @@ func (h *httpFetcher) LoadSong(requestURL string) error {
 		Artist string `json:"artist"` // "MM:SS � ArtistName"
 	}
 	if err := json.Unmarshal(data, &raws); err != nil {
+		log.Printf("[Fetcher] JSON unmarshal error: %v", err)
 		return fmt.Errorf("invalid songs JSON: %w", err)
 	}
 
@@ -196,7 +204,7 @@ func (h *httpFetcher) LoadSong(requestURL string) error {
 	for _, item := range raws {
 		dur, err := parseDuration(item.Artist)
 		if err != nil {
-			// skip malformed times
+			log.Printf("[Fetcher] skip %s: invalid duration in %q (%v)", item.ID, item.Artist, err)
 			continue
 		}
 		s := Song{

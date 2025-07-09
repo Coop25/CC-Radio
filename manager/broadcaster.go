@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -34,57 +35,56 @@ func (b *Broadcaster) Start(ctx context.Context) {
 	b.cancel = cancel
 
 	go func() {
+		log.Printf("[Broadcaster] Starting with interval %v", b.interval)
 		ticker := time.NewTicker(b.interval)
 		defer ticker.Stop()
 
-		var currSlices, nextSlices [][]byte
-		var idx int
-		var current, next accessor.Song
-
-		// ─── Phase 0: wait for the first song ─────────────────────────────────────
-		for {
-			// try to pull the next song
-			track, ok := b.playlist.Next()
-			if !ok {
-				// nothing yet—block until somebody adds one or we shutdown
-				select {
-				case <-b.playlist.NewSongCh:
-					continue
-				case <-ctx.Done():
-					return
-				}
-			}
-			// got our first track!
-			current = track
-			break
+		// Load initial track (if any):
+		log.Printf("[Broadcaster] Attempting to load initial track")
+		current, ok := b.playlist.Next()
+		if !ok {
+			log.Printf("[Broadcaster] No initial track; exiting start routine")
+			<-ctx.Done()
+			return
 		}
-		// queue up the “next” track immediately
-		next, _ = b.playlist.Next()
-		currSlices = b.loadSlices(current)
-		nextSlices = b.loadSlices(next)
-		idx = 0
+		log.Printf("[Broadcaster] Loaded initial track: ID=%s, Duration=%v", current.ID, current.Duration)
 
-		// ─── Phase 1: the normal ticker loop ──────────────────────────────────────
+		next, _ := b.playlist.Next()
+		log.Printf("[Broadcaster] Preloaded next track: ID=%s", next.ID)
+
+		currSlices := b.loadSlices(current)
+		nextSlices := b.loadSlices(next)
+		log.Printf("[Broadcaster] Prepared %d chunks for current, %d for next", len(currSlices), len(nextSlices))
+		idx := 0
+
 		for {
 			select {
 			case <-ctx.Done():
+				log.Printf("[Broadcaster] Context cancelled, stopping")
 				return
+
 			case <-ticker.C:
-				// send the current chunk
+				// send one chunk
 				b.mu.Lock()
-				for c := range b.conns {
-					c.WriteMessage(websocket.BinaryMessage, currSlices[idx])
+				for conn := range b.conns {
+					if err := conn.WriteMessage(websocket.BinaryMessage, currSlices[idx]); err != nil {
+						log.Printf("[Broadcaster] WriteMessage error: %v", err)
+					}
 				}
 				b.mu.Unlock()
 
 				idx++
 				if idx >= len(currSlices) {
-					// rotate
+					// rotate tracks
+					log.Printf("[Broadcaster] Finished track %s; rotating to %s", current.ID, next.ID)
 					currSlices = nextSlices
 					current = next
-					// pull in another “next”
+
+					// queue up a new “next”
 					next, _ = b.playlist.Next()
 					nextSlices = b.loadSlices(next)
+					log.Printf("[Broadcaster] New next track: ID=%s, prepared %d chunks", next.ID, len(nextSlices))
+
 					idx = 0
 				}
 			}
