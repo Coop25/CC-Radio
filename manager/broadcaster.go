@@ -132,11 +132,12 @@ func (b *Broadcaster) loadSlices(s accessor.Song) [][]byte {
 }
 
 func (b *Broadcaster) Skip() {
+	// Cancel the running loop (if any)
 	if b.cancel != nil {
-		b.cancel() // stop current loop
-		// restart a fresh broadcaster using new context
-		// …similar logic to Start…
+		b.cancel()
 	}
+	// Start a fresh broadcaster goroutine
+	b.Start(context.Background())
 }
 
 func (b *Broadcaster) Register(conn *websocket.Conn) {
