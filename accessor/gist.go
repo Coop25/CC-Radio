@@ -78,37 +78,59 @@ func (g *GistAccessor) SavePlaylist(pl *Playlist) error {
     return nil
 }
 
-// LoadByID GETs the raw file from raw.githubusercontent.com
+type gistFile struct {
+    Content string `json:"content"`
+}
+
+type gistResponse struct {
+    Files map[string]gistFile `json:"files"`
+}
+
 func (g *GistAccessor) LoadByID(pl *Playlist) error {
-    rawURL := fmt.Sprintf(
-        "https://gist.githubusercontent.com/%s/raw/playlist.json",
-        g.gistID,
-    )
-    resp, err := g.client.Get(rawURL)
+    // 1) Call the GitHub API to get the Gist JSON
+    url := fmt.Sprintf("https://api.github.com/gists/%s", g.gistID)
+    req, err := http.NewRequest("GET", url, nil)
+    if err != nil {
+        return err
+    }
+    req.Header.Set("Authorization", "token "+g.token)
+    req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+    resp, err := g.client.Do(req)
     if err != nil {
         return err
     }
     defer resp.Body.Close()
 
     if resp.StatusCode != http.StatusOK {
-        data, _ := io.ReadAll(resp.Body)
-        return fmt.Errorf("gist load failed: %s", string(data))
+        return fmt.Errorf("gist load failed: %s", resp.Status)
     }
 
-    data, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return err
+    // 2) Decode the response into our struct
+    var gr gistResponse
+    if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
+        return fmt.Errorf("invalid Gist JSON: %w", err)
     }
 
+    // 3) Extract the content of "playlist.json"
+    file, ok := gr.Files["playlist.json"]
+    if !ok {
+        return fmt.Errorf("gist does not contain playlist.json")
+    }
+
+    // 4) Unmarshal that content into our backup struct
     var backup playlistBackup
-    if err := json.Unmarshal(data, &backup); err != nil {
-        return fmt.Errorf("invalid JSON in gist: %w", err)
+    if err := json.Unmarshal([]byte(file.Content), &backup); err != nil {
+        return fmt.Errorf("invalid playlist JSON in gist: %w", err)
     }
 
+    // 5) Replace the playlist state
     pl.mu.Lock()
     pl.queue = backup.Queue
     pl.randomNext = backup.RandomNext
     pl.mu.Unlock()
+
+    // 6) Shuffle and return
     pl.Shuffle()
     return nil
 }
