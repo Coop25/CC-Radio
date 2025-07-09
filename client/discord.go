@@ -124,7 +124,7 @@ func NewDiscordBot(
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
-						Content: fmt.Sprintf("✅ Playlist saved!"),
+						Content: "✅ Playlist saved!",
 					},
 				})
 			}
