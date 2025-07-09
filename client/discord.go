@@ -25,7 +25,7 @@ var commands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
-		Name:        "addSegment",
+		Name:        "addradiosegment",
 		Description: "Add a Radio Segment by url to the radio segment playlist",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
@@ -61,7 +61,7 @@ var commands = []*discordgo.ApplicationCommand{
 		Description: "Remove the currently-playing track from the queue",
 	},
 	{
-		Name:        "forceSegment",
+		Name:        "force-radio-segment",
 		Description: "force a radio segment to play next, may take 2 songs",
 	},
 }
@@ -114,7 +114,7 @@ func NewDiscordBot(
 					Content: fmt.Sprintf("✅ Queued song %q!", songID),
 				},
 			})
-		case "addSegment":
+		case "addradiosegment":
 			songID := data.Options[0].StringValue()
 			if err := fetcher.LoadRadioSegment(songID); err != nil {
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -184,7 +184,7 @@ func NewDiscordBot(
 				},
 			})
 
-		case "forceSegment":
+		case "force-radio-segment":
 			pl.ForceNextRadioSegment()
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
