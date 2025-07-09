@@ -80,6 +80,18 @@ func NewDiscordBot(
 				})
 				return
 			}
+
+			if err := gist.SavePlaylist(pl); err != nil {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: fmt.Sprintf("❌ Track added - but Save failed: %v", err),
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
 				Data: &discordgo.InteractionResponseData{
@@ -94,6 +106,17 @@ func NewDiscordBot(
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
 						Content: fmt.Sprintf("❌ Could not add %q: %v", songID, err),
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
+			if err := gist.SavePlaylist(pl); err != nil {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: fmt.Sprintf("❌ Track added - but Save failed: %v", err),
 						Flags:   discordgo.MessageFlagsEphemeral,
 					},
 				})
@@ -115,8 +138,7 @@ func NewDiscordBot(
 				},
 			})
 		case "saveplaylist":
-			err := gist.SavePlaylist(pl)
-			if err != nil {
+			if err := gist.SavePlaylist(pl); err != nil {
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
@@ -124,14 +146,14 @@ func NewDiscordBot(
 						Flags:   discordgo.MessageFlagsEphemeral,
 					},
 				})
-			} else {
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: "✅ Playlist saved!",
-					},
-				})
+				return
 			}
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "✅ Playlist saved!",
+				},
+			})
 		case "deletecurrent":
 			err := b.DeleteCurrent()
 			if err != nil {
@@ -143,6 +165,16 @@ func NewDiscordBot(
 					},
 				})
 			} else {
+				if err := gist.SavePlaylist(pl); err != nil {
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionResponseChannelMessageWithSource,
+						Data: &discordgo.InteractionResponseData{
+							Content: fmt.Sprintf("❌ Track removed - but Save failed: %v", err),
+							Flags:   discordgo.MessageFlagsEphemeral,
+						},
+					})
+					return
+				}
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
