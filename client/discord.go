@@ -25,7 +25,7 @@ var commands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
-		Name:        "addRadioSegment",
+		Name:        "addSegment",
 		Description: "Add a Radio Segment by url to the radio segment playlist",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
@@ -114,7 +114,7 @@ func NewDiscordBot(
 					Content: fmt.Sprintf("✅ Queued song %q!", songID),
 				},
 			})
-		case "addRadioSegment":
+		case "addSegment":
 			songID := data.Options[0].StringValue()
 			if err := fetcher.LoadRadioSegment(songID); err != nil {
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
