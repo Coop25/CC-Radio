@@ -39,32 +39,52 @@ func (b *Broadcaster) Start(ctx context.Context) {
 		ticker := time.NewTicker(b.interval)
 		defer ticker.Stop()
 
-		// Load initial track (if any):
-		log.Printf("[Broadcaster] Attempting to load initial track")
-		current, ok := b.playlist.Next()
-		if !ok {
-			log.Printf("[Broadcaster] No initial track; exiting start routine")
-			<-ctx.Done()
-			return
-		}
-		log.Printf("[Broadcaster] Loaded initial track: ID=%s, Duration=%v", current.ID, current.Duration)
+		var (
+			currSlices [][]byte
+			nextSlices [][]byte
+			idx        int
+			current    accessor.Song
+			next       accessor.Song
+		)
 
-		next, _ := b.playlist.Next()
+		// ───── Phase 0: wait for the first song ───────────────────────────
+		log.Printf("[Broadcaster] Waiting for first song...")
+		for {
+			track, ok := b.playlist.Next()
+			if !ok {
+				log.Printf("[Broadcaster] No song yet, blocking until newSongCh")
+				select {
+				case <-b.playlist.NewSongCh:
+					log.Printf("[Broadcaster] Detected new song, retrying Next()")
+					continue
+				case <-ctx.Done():
+					log.Printf("[Broadcaster] Context canceled before first song")
+					return
+				}
+			}
+			current = track
+			log.Printf("[Broadcaster] Loaded initial track: ID=%s, Duration=%v", current.ID, current.Duration)
+			break
+		}
+
+		// preload next
+		next, _ = b.playlist.Next()
 		log.Printf("[Broadcaster] Preloaded next track: ID=%s", next.ID)
 
-		currSlices := b.loadSlices(current)
-		nextSlices := b.loadSlices(next)
+		currSlices = b.loadSlices(current)
+		nextSlices = b.loadSlices(next)
 		log.Printf("[Broadcaster] Prepared %d chunks for current, %d for next", len(currSlices), len(nextSlices))
-		idx := 0
+		idx = 0
 
+		// ───── Phase 1: normal ticker loop ────────────────────────────────
 		for {
 			select {
 			case <-ctx.Done():
-				log.Printf("[Broadcaster] Context cancelled, stopping")
+				log.Printf("[Broadcaster] Context canceled, stopping broadcaster")
 				return
 
 			case <-ticker.C:
-				// send one chunk
+				log.Printf("[Broadcaster] Ticker tick, sending chunk %d/%d of %s", idx+1, len(currSlices), current.ID)
 				b.mu.Lock()
 				for conn := range b.conns {
 					if err := conn.WriteMessage(websocket.BinaryMessage, currSlices[idx]); err != nil {
@@ -75,17 +95,27 @@ func (b *Broadcaster) Start(ctx context.Context) {
 
 				idx++
 				if idx >= len(currSlices) {
-					// rotate tracks
 					log.Printf("[Broadcaster] Finished track %s; rotating to %s", current.ID, next.ID)
 					currSlices = nextSlices
 					current = next
 
-					// queue up a new “next”
+					// pull in another next
 					next, _ = b.playlist.Next()
 					nextSlices = b.loadSlices(next)
 					log.Printf("[Broadcaster] New next track: ID=%s, prepared %d chunks", next.ID, len(nextSlices))
 
 					idx = 0
+				}
+
+			case <-b.playlist.NewSongCh:
+				// if we’re already streaming but nextSlices is empty, reload next immediately
+				if len(nextSlices) == 0 {
+					log.Printf("[Broadcaster] Detected new song during playback, loading as next")
+					next, _ = b.playlist.Next()
+					nextSlices = b.loadSlices(next)
+					log.Printf("[Broadcaster] Loaded next: ID=%s, %d chunks", next.ID, len(nextSlices))
+				} else {
+					log.Printf("[Broadcaster] Detected new song during playback, will queue after current finishes")
 				}
 			}
 		}
