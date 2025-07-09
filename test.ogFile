@@ -1,0 +1,138 @@
+package main
+
+import (
+	"io/ioutil"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// your upstream DF-PWM stream
+const (
+	upstreamURL = "https://ipod-2to6magyna-uc.a.run.app/?v=2.1&id=kzeeV_Dl9gw"
+	// Total length of the audio in minutes and seconds:
+	audioMinutes = 4
+	audioSeconds = 03
+
+	// Interval at which to send each chunk:
+	chunkInterval = 100 * time.Millisecond
+)
+
+// WebSocket upgrader with open origin
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+type wsConn struct {
+	*websocket.Conn
+}
+
+var (
+	connsMu sync.Mutex
+	conns   = map[*wsConn]struct{}{}
+)
+
+func main() {
+	// Calculate total duration
+	totalDuration := time.Duration(audioMinutes)*time.Minute + time.Duration(audioSeconds)*time.Second
+
+	// 1) Fetch & buffer upstream with required headers
+	data, err := fetchUpstreamWithHeaders(upstreamURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("Fetched %d bytes; preparing slices for %s playback", len(data), totalDuration)
+
+	// 2) Prepare slices
+	slices := prepareSlices(data, totalDuration, chunkInterval)
+	log.Printf("Split into %d chunks (looping)", len(slices))
+
+	// 3) Broadcaster: ticker drives slice broadcasts
+	go func() {
+		ticker := time.NewTicker(chunkInterval)
+		defer ticker.Stop()
+		idx := 0
+		for range ticker.C {
+			connsMu.Lock()
+			for c := range conns {
+				// send each slice as binary websocket message
+				c.WriteMessage(websocket.BinaryMessage, slices[idx])
+			}
+			connsMu.Unlock()
+			idx = (idx + 1) % len(slices)
+		}
+	}()
+
+	// 4) WS endpoint
+	http.HandleFunc("/ws", wsHandler)
+	log.Println("WebSocket server listening on :8080/ws")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+// fetchUpstreamWithHeaders GETs the upstream URL with necessary headers
+func fetchUpstreamWithHeaders(url string) ([]byte, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "computercraft/1.115.1")
+	req.Header.Set("Accept-Charset", "UTF-8")
+	req.Header.Set("Connection", "keep-alive")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return ioutil.ReadAll(resp.Body)
+}
+
+// prepareSlices splits data into fixed-size chunks over the given totalDuration and interval
+func prepareSlices(data []byte, total time.Duration, interval time.Duration) [][]byte {
+	totalBytes := len(data)
+	bytesPerSecond := float64(totalBytes) / total.Seconds()
+	chunkSize := int(bytesPerSecond * interval.Seconds())
+	if chunkSize <= 0 {
+		log.Fatalf("Invalid chunkSize computed: %d", chunkSize)
+	}
+
+	var slices [][]byte
+	for off := 0; off < totalBytes; off += chunkSize {
+		end := off + chunkSize
+		if end > totalBytes {
+			end = totalBytes
+		}
+		slices = append(slices, data[off:end])
+	}
+	return slices
+}
+
+// wsHandler upgrades HTTP to WebSocket and registers the connection
+func wsHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("WebSocket upgrade failed:", err)
+		return
+	}
+	ws := &wsConn{conn}
+
+	connsMu.Lock()
+	conns[ws] = struct{}{}
+	connsMu.Unlock()
+
+	// block until client disconnects
+	for {
+		if _, _, err := ws.ReadMessage(); err != nil {
+			break
+		}
+	}
+
+	connsMu.Lock()
+	delete(conns, ws)
+	connsMu.Unlock()
+	ws.Close()
+}

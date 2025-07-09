@@ -1,0 +1,91 @@
+// client/discord.go
+package client
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/Coop25/CC-Radio/accessor"
+	"github.com/Coop25/CC-Radio/config"
+	"github.com/Coop25/CC-Radio/manager"
+	"github.com/bwmarrin/discordgo"
+)
+
+var commands = []*discordgo.ApplicationCommand{
+	{
+		Name:        "addsong",
+		Description: "Add a song by url to the master playlist",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "url",
+				Description: "The youtube url",
+				Required:    true,
+			},
+		},
+	},
+	{
+		Name:        "skip",
+		Description: "Skip the currently playing song",
+	},
+}
+
+// NewDiscordBot initializes, registers, and opens the Discord session.
+func NewDiscordBot(
+	cfg *config.Config,
+	b *manager.Broadcaster,
+	fetcher accessor.Fetcher,
+) (*discordgo.Session, error) {
+
+	dg, err := discordgo.New("Bot " + cfg.DiscordToken)
+	if err != nil {
+		return nil, fmt.Errorf("discordgo.New: %w", err)
+	}
+
+	// Interaction handler
+	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		data := i.ApplicationCommandData()
+		switch data.Name {
+		case "addsong":
+			songID := data.Options[0].StringValue()
+			if err := fetcher.LoadSong(songID); err != nil {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: fmt.Sprintf("❌ Could not add %q: %v", songID, err),
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: fmt.Sprintf("✅ Queued song %q!", songID),
+				},
+			})
+
+		case "skip":
+			b.Skip()
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "⏭️ Skipped current track.",
+				},
+			})
+		}
+	})
+
+	if err := dg.Open(); err != nil {
+		return nil, fmt.Errorf("dg.Open: %w", err)
+	}
+
+	appID := dg.State.User.ID
+	for _, cmd := range commands {
+		if _, err := dg.ApplicationCommandCreate(appID, cfg.DiscordGuildID, cmd); err != nil {
+			fmt.Fprintf(os.Stderr, "unable to create command %s: %v\n", cmd.Name, err)
+		}
+	}
+
+	return dg, nil
+}
