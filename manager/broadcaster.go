@@ -37,33 +37,52 @@ func (b *Broadcaster) Start(ctx context.Context) {
 		ticker := time.NewTicker(b.interval)
 		defer ticker.Stop()
 
-		// Load initial track (if any):
-		current, ok := b.playlist.Next()
-		if !ok {
-			<-ctx.Done()
-			return // nothing to do
-		}
-		next, _ := b.playlist.Next()
-		currSlices := b.loadSlices(current)
-		nextSlices := b.loadSlices(next)
-		idx := 0
+		var currSlices, nextSlices [][]byte
+		var idx int
+		var current, next accessor.Song
 
+		// ─── Phase 0: wait for the first song ─────────────────────────────────────
+		for {
+			// try to pull the next song
+			track, ok := b.playlist.Next()
+			if !ok {
+				// nothing yet—block until somebody adds one or we shutdown
+				select {
+				case <-b.playlist.NewSongCh:
+					continue
+				case <-ctx.Done():
+					return
+				}
+			}
+			// got our first track!
+			current = track
+			break
+		}
+		// queue up the “next” track immediately
+		next, _ = b.playlist.Next()
+		currSlices = b.loadSlices(current)
+		nextSlices = b.loadSlices(next)
+		idx = 0
+
+		// ─── Phase 1: the normal ticker loop ──────────────────────────────────────
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// send the current chunk
 				b.mu.Lock()
 				for c := range b.conns {
 					c.WriteMessage(websocket.BinaryMessage, currSlices[idx])
 				}
 				b.mu.Unlock()
+
 				idx++
 				if idx >= len(currSlices) {
-					// rotate tracks
+					// rotate
 					currSlices = nextSlices
 					current = next
-					// queue up a new “next”
+					// pull in another “next”
 					next, _ = b.playlist.Next()
 					nextSlices = b.loadSlices(next)
 					idx = 0

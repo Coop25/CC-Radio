@@ -22,6 +22,7 @@ type Playlist struct {
     cooldown   time.Duration
     maxChance  float64
     rng        *rand.Rand
+	NewSongCh chan struct{}
 }
 
 // NewPlaylist creates a Playlist with its own RNG seeded from the current time.
@@ -32,13 +33,23 @@ func NewPlaylist(cooldown time.Duration, maxChance float64) *Playlist {
         cooldown:  cooldown,
         maxChance: maxChance,
         rng:       rand.New(src),
+        NewSongCh: make(chan struct{}, 1),
     }
 }
 
 func (p *Playlist) Add(song Song) {
     p.mu.Lock()
-    defer p.mu.Unlock()
+    emptyBefore := len(p.queue) == 0
     p.queue = append(p.queue, song)
+    p.mu.Unlock()
+
+    // if we just went from 0→1, notify the broadcaster
+    if emptyBefore {
+        select {
+        case p.NewSongCh <- struct{}{}:
+        default:
+        }
+    }
 }
 
 func (p *Playlist) Shuffle() {

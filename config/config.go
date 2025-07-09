@@ -15,9 +15,9 @@ type Config struct {
 	FetchBaseURL string `envconfig:"FETCH_BASE_URL" required:"true"`
 	AuthToken    string `envconfig:"FETCH_AUTH_TOKEN"` // optional
 
-	PastebinDevKey  string        `envconfig:"PASTEBIN_DEV_KEY" required:"true"`
-	PastebinPasteID string        `envconfig:"PASTEBIN_PASTE_ID"`          // id to auto-load on startup
-	SaveInterval    time.Duration `envconfig:"SAVE_INTERVAL" default:"1h"` // how often to auto-save
+	GITHUB_TOKEN   string        `envconfig:"GITHUB_TOKEN"     required:"true"`
+	GITHUB_GIST_ID string        `envconfig:"GITHUB_GIST_ID"`
+	SaveInterval   time.Duration `envconfig:"SAVE_INTERVAL" default:"1h"` // how often to auto-save
 
 	DiscordToken   string `envconfig:"DISCORD_TOKEN"   required:"true"`
 	DiscordGuildID string `envconfig:"DISCORD_GUILD_ID" required:"true"`

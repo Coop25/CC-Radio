@@ -23,17 +23,13 @@ func main() {
 	// 2) init playlist
 	pl := accessor.NewPlaylist(cfg.RandomCooldown, cfg.RandomMaxChance)
 	fetcher := accessor.NewHTTPFetcher(cfg, pl)
+    gist    := accessor.NewGistAccessor(cfg)
 
-	// Initialize Pastebin accessor
-	pb := accessor.NewPastebinAccessor(cfg)
-
-	// If a paste ID was provided, load it now
-	if cfg.PastebinPasteID != "" {
-		if err := pb.LoadByID(cfg.PastebinPasteID, pl); err != nil {
-			log.Fatalf("failed to load playlist from paste ID %s: %v", cfg.PastebinPasteID, err)
-		}
-		fmt.Println("Loaded playlist from paste:", cfg.PastebinPasteID)
-	}
+    // load existing state from Gist
+    if err := gist.LoadByID(pl); err != nil {
+        log.Fatalf("load from Gist failed: %v", err)
+    }
+    log.Println("✅ loaded playlist from Gist")
 
 	// 3) init broadcaster & HTTP
 	b := manager.NewBroadcaster(cfg.ChunkInterval, pl, fetcher)
@@ -41,26 +37,24 @@ func main() {
 
 	client.RegisterWS(b)
 	// 6) Instantiate Discord bot just like everything else
-	dg, err := client.NewDiscordBot(cfg, b, fetcher, pb, pl)
+	dg, err := client.NewDiscordBot(cfg, b, fetcher, gist, pl)
 	if err != nil {
 		log.Fatalf("Discord bot init failed: %v", err)
 	}
 	defer dg.Close()
 
-	// 6) Launch auto-save goroutine
-	go func() {
-		ticker := time.NewTicker(cfg.SaveInterval)
-		defer ticker.Stop()
-		for {
-			<-ticker.C
-			pasteID, err := pb.SavePlaylist(pl, "Auto-saved Playlist")
-			if err != nil {
-				log.Printf("⚠️  auto-save failed: %v", err)
-				continue
-			}
-			log.Printf("✅  playlist auto-saved to paste ID %q", pasteID)
-		}
-	}()
+    // auto-save loop
+    go func() {
+        ticker := time.NewTicker(cfg.SaveInterval)
+        defer ticker.Stop()
+        for range ticker.C {
+            if err := gist.SavePlaylist(pl); err != nil {
+                log.Printf("⚠️  auto‐save to Gist failed: %v", err)
+            } else {
+                log.Println("✅ playlist auto‐saved to Gist")
+            }
+        }
+    }()
 
 	log.Printf("listening on :%d", cfg.HTTPPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", cfg.HTTPPort), nil))
