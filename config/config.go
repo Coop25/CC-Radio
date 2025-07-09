@@ -21,6 +21,8 @@ type Config struct {
 
 	DiscordToken   string `envconfig:"DISCORD_TOKEN"   required:"true"`
 	DiscordGuildID string `envconfig:"DISCORD_GUILD_ID" required:"true"`
+
+	NowPlayingWebhookURL string `envconfig:"NOW_PLAYING_WEBHOOK_URL"`
 }
 
 func Load() (*Config, error) {

@@ -21,18 +21,18 @@ func main() {
 	}
 
 	// 2) init playlist
-	pl := accessor.NewPlaylist(cfg.RandomCooldown, cfg.RandomMaxChance)
+	pl := accessor.NewPlaylist(cfg)
 	fetcher := accessor.NewHTTPFetcher(cfg, pl)
-    gist    := accessor.NewGistAccessor(cfg)
+	gist := accessor.NewGistAccessor(cfg)
 
-    // load existing state from Gist
-    if err := gist.LoadByID(pl); err != nil {
-        log.Fatalf("load from Gist failed: %v", err)
-    }
-    log.Println("✅ loaded playlist from Gist")
+	// load existing state from Gist
+	if err := gist.LoadByID(pl); err != nil {
+		log.Fatalf("load from Gist failed: %v", err)
+	}
+	log.Println("✅ loaded playlist from Gist")
 
 	// 3) init broadcaster & HTTP
-	b := manager.NewBroadcaster(cfg.ChunkInterval, pl, fetcher)
+	b := manager.NewBroadcaster(cfg, pl, fetcher)
 	b.Start(context.Background())
 
 	client.RegisterWS(b)
@@ -43,18 +43,18 @@ func main() {
 	}
 	defer dg.Close()
 
-    // auto-save loop
-    go func() {
-        ticker := time.NewTicker(cfg.SaveInterval)
-        defer ticker.Stop()
-        for range ticker.C {
-            if err := gist.SavePlaylist(pl); err != nil {
-                log.Printf("⚠️  auto‐save to Gist failed: %v", err)
-            } else {
-                log.Println("✅ playlist auto‐saved to Gist")
-            }
-        }
-    }()
+	// auto-save loop
+	go func() {
+		ticker := time.NewTicker(cfg.SaveInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := gist.SavePlaylist(pl); err != nil {
+				log.Printf("⚠️  auto‐save to Gist failed: %v", err)
+			} else {
+				log.Println("✅ playlist auto‐saved to Gist")
+			}
+		}
+	}()
 
 	log.Printf("listening on :%d", cfg.HTTPPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", cfg.HTTPPort), nil))
