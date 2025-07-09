@@ -82,10 +82,18 @@ func (p *Playlist) Next() (song Song, ok bool) {
         }
     }
 
-    // 2) Fall back to the master queue
-    if len(p.queue) == 0 {
+    // ② Master queue
+    qlen := len(p.queue)
+    if qlen == 0 {
         return Song{}, false
     }
+
+    // If there's only one track, just return it (don't remove it)
+    if qlen == 1 {
+        song = p.queue[0]
+        return song, true
+    }
+	
     song = p.queue[0]
     p.queue = p.queue[1:]
     if len(p.queue) == 0 {
