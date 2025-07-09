@@ -57,14 +57,10 @@ func NewHTTPFetcher(cfg *config.Config, pl *Playlist) *httpFetcher {
 
 func (h *httpFetcher) FetchBytes(songID string) ([]byte, error) {
 	// build URL with ?id=<songID>
-	req, err := http.NewRequest("GET", h.baseURL, nil)
+	req, err := http.NewRequest("GET", h.baseURL+"?v=2&id="+songID, nil)
 	if err != nil {
 		return nil, err
 	}
-	q := req.URL.Query()
-	q.Set("v", "2")
-	q.Set("id", songID)
-	req.URL.RawQuery = q.Encode()
 
 	// apply shared headers
 	req.Header = h.headers
