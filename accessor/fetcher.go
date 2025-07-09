@@ -202,7 +202,12 @@ func (h *httpFetcher) LoadSong(requestURL string) error {
 
 	// convert & enqueue
 	for _, item := range raws {
-		dur, err := parseDuration(item.Artist)
+		// Artist field starts with "MM:SS " then real artist name
+		parts := strings.SplitN(item.Artist, " ", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		dur, err := parseDuration(parts[0])
 		if err != nil {
 			log.Printf("[Fetcher] skip %s: invalid duration in %q (%v)", item.ID, item.Artist, err)
 			continue
