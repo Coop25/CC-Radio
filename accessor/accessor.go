@@ -15,40 +15,38 @@ type Song struct {
 }
 
 type Playlist struct {
-    mu         sync.Mutex
-    queue      []Song
-    randomNext []Song
-    lastRandom time.Time
-    cooldown   time.Duration
-    maxChance  float64
-    rng        *rand.Rand
-	NewSongCh chan struct{}
+    mu           sync.Mutex
+    queue        []Song
+    currentIndex int       // index into queue
+    randomNext   []Song
+    randomIndex  int       // index into randomNext
+    lastRandom   time.Time
+    cooldown     time.Duration
+    maxChance    float64
+    rng          *rand.Rand
+    NewSongCh    chan struct{}
 }
 
-// NewPlaylist creates a Playlist with its own RNG seeded from the current time.
 func NewPlaylist(cooldown time.Duration, maxChance float64) *Playlist {
-    // Create a local random generator rather than seeding the global one.
     src := rand.NewSource(time.Now().UnixNano())
     return &Playlist{
-        cooldown:  cooldown,
-        maxChance: maxChance,
-        rng:       rand.New(src),
-        NewSongCh: make(chan struct{}, 1),
+        cooldown:     cooldown,
+        maxChance:    maxChance,
+        rng:          rand.New(src),
+        NewSongCh:    make(chan struct{}, 1),
+        currentIndex: 0,
+        randomIndex:  0,
     }
 }
 
 func (p *Playlist) Add(song Song) {
     p.mu.Lock()
-    emptyBefore := len(p.queue) == 0
+    wasEmpty := len(p.queue) == 0
     p.queue = append(p.queue, song)
     p.mu.Unlock()
 
-    // if we just went from 0→1, notify the broadcaster
-    if emptyBefore {
-        select {
-        case p.NewSongCh <- struct{}{}:
-        default:
-        }
+    if wasEmpty {
+        select { case p.NewSongCh <- struct{}{}: default: }
     }
 }
 
@@ -58,49 +56,46 @@ func (p *Playlist) Shuffle() {
     p.rng.Shuffle(len(p.queue), func(i, j int) {
         p.queue[i], p.queue[j] = p.queue[j], p.queue[i]
     })
+    p.currentIndex = 0
 }
 
-// Next returns either a “randomNext” track (respecting cooldown + chance)
-// or the next song in the master queue (reshuffling when it empties).
-// If there’s nothing to play, ok=false.
+// Next returns either a randomNext bump (cycling through that slice),
+// or the next song in the main queue (cycling as well).  Neither slice
+// is ever mutated—indices simply wrap around.
 func (p *Playlist) Next() (song Song, ok bool) {
     p.mu.Lock()
     defer p.mu.Unlock()
 
     now := time.Now()
-
-    // 1) Maybe play a randomNext track
+    // 1) randomNext bump (unchanged)
     if now.Sub(p.lastRandom) >= p.cooldown && len(p.randomNext) > 0 {
-        // chance grows over time up to maxChance
         chance := (now.Sub(p.lastRandom).Seconds() / p.cooldown.Seconds()) * p.maxChance
         if p.rng.Float64() < chance {
-            idx := p.rng.Intn(len(p.randomNext))
-            song = p.randomNext[idx]
-            p.randomNext = append(p.randomNext[:idx], p.randomNext[idx+1:]...)
+            song = p.randomNext[p.randomIndex]
+            p.randomIndex = (p.randomIndex + 1) % len(p.randomNext)
             p.lastRandom = now
             return song, true
         }
     }
 
-    // ② Master queue
-    qlen := len(p.queue)
-    if qlen == 0 {
+    // 2) main queue cycling + shuffle on wrap
+    n := len(p.queue)
+    if n == 0 {
         return Song{}, false
     }
 
-    // If there's only one track, just return it (don't remove it)
-    if qlen == 1 {
-        song = p.queue[0]
-        return song, true
-    }
-	
-    song = p.queue[0]
-    p.queue = p.queue[1:]
-    if len(p.queue) == 0 {
-        // once drained, reshuffle for the next cycle
-        p.rng.Shuffle(len(p.queue), func(i, j int) {
+    // pick the current song
+    song = p.queue[p.currentIndex]
+
+    // advance index, and if we hit the end, reshuffle & reset
+    p.currentIndex++
+    if p.currentIndex >= n {
+        // shuffle for the next cycle
+        p.rng.Shuffle(n, func(i, j int) {
             p.queue[i], p.queue[j] = p.queue[j], p.queue[i]
         })
+        p.currentIndex = 0
     }
+
     return song, true
 }
