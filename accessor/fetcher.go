@@ -61,6 +61,7 @@ func (h *httpFetcher) FetchBytes(songID string) ([]byte, error) {
 		return nil, err
 	}
 	q := req.URL.Query()
+	q.Set("v", "2")
 	q.Set("id", songID)
 	req.URL.RawQuery = q.Encode()
 
@@ -88,6 +89,7 @@ func (h *httpFetcher) LoadPlaylist(playlistURL string) error {
 		return fmt.Errorf("load playlist: %w", err)
 	}
 	q := req.URL.Query()
+	q.Set("v", "2")
 	q.Set("search", playlistURL)
 	req.URL.RawQuery = q.Encode()
 	// apply the same headers as FetchBytes
@@ -156,6 +158,7 @@ func (h *httpFetcher) LoadSong(requestURL string) error {
 		return fmt.Errorf("load songs: %w", err)
 	}
 	q := req.URL.Query()
+	q.Set("v", "2")
 	q.Set("search", requestURL)
 	req.URL.RawQuery = q.Encode()
 
