@@ -121,48 +121,49 @@ func (p *Playlist) Next() (Song, bool) {
     return song, true
 }
 
-// pickRandomSegment picks one from randomNext subject to randomHistory rules.
+// pickRandomSegment picks one from randomNext without mutating it.
 func (p *Playlist) pickRandomSegment() Song {
-    // build allowed pool
+    // build allowed pool without mutating p.randomNext
     cold := make(map[string]struct{}, len(p.randomHistory))
     for _, id := range p.randomHistory {
         cold[id] = struct{}{}
     }
-    allowed := p.randomNext[:0]
+
+    allowed := make([]Song, 0, len(p.randomNext))
     for _, s := range p.randomNext {
         if _, isCold := cold[s.ID]; !isCold {
             allowed = append(allowed, s)
         }
     }
     if len(allowed) == 0 {
-        // everyone’s cold → reset history
+        // everyone’s cold → reset history and allow all
         p.randomHistory = nil
-        allowed = append([]Song(nil), p.randomNext...)
+        allowed = append(allowed, p.randomNext...)
     }
-    // pick uniformly
+
     song := allowed[p.rng.Intn(len(allowed))]
     p.recordRandomHistory(song.ID)
     return song
 }
 
-// pickRandomFromQueue picks one from queue subject to recentHistory rules.
+// pickRandomFromQueue picks one from queue without mutating it.
 func (p *Playlist) pickRandomFromQueue() Song {
-    // build allowed pool
     cold := make(map[string]struct{}, len(p.recentHistory))
     for _, id := range p.recentHistory {
         cold[id] = struct{}{}
     }
-    allowed := p.queue[:0]
+
+    allowed := make([]Song, 0, len(p.queue))
     for _, s := range p.queue {
         if _, isCold := cold[s.ID]; !isCold {
             allowed = append(allowed, s)
         }
     }
     if len(allowed) == 0 {
-        // reset queue history
         p.recentHistory = nil
-        allowed = append([]Song(nil), p.queue...)
+        allowed = append(allowed, p.queue...)
     }
+
     song := allowed[p.rng.Intn(len(allowed))]
     p.recordQueueHistory(song.ID)
     return song
