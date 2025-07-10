@@ -279,7 +279,7 @@ func parseSongs(data []rawSong) ([]Song, error) {
 		})
 	}
 	if len(out) == 0 {
-		return out, fmt.Errorf("No Songs Added")
+		return out, fmt.Errorf("no songs added")
 	}
 	return out, nil
 }
