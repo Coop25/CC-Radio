@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/Coop25/CC-Radio/accessor"
 	"github.com/Coop25/CC-Radio/client"
@@ -42,19 +41,6 @@ func main() {
 		log.Fatalf("Discord bot init failed: %v", err)
 	}
 	defer dg.Close()
-
-	// auto-save loop
-	go func() {
-		ticker := time.NewTicker(cfg.SaveInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			if err := gist.SavePlaylist(pl); err != nil {
-				log.Printf("⚠️  auto‐save to Gist failed: %v", err)
-			} else {
-				log.Println("✅ playlist auto‐saved to Gist")
-			}
-		}
-	}()
 
 	log.Printf("listening on :%d", cfg.HTTPPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", cfg.HTTPPort), nil))
