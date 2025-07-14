@@ -2,6 +2,7 @@ package accessor
 
 import (
     "math/rand"
+    "sort"
     "sync"
     "time"
 
@@ -17,63 +18,64 @@ type Song struct {
 }
 
 type Playlist struct {
-    mu              sync.Mutex
-    queue           []Song           // master list
-    randomNext      []Song           // radio segments
-    lastPlayed      map[string]time.Time
-    rng             *rand.Rand
-    cooldown        time.Duration
-    maxChance       float64
-    lastRandom      time.Time
-    NewSongCh       chan struct{}
-    forceNextRadio  bool
+    mu                sync.Mutex
+    queue             []Song            // master list
+    randomNext        []Song            // radio‐segment list
+    lastPlayed        map[string]time.Time
+    lastRadioPlayed   map[string]time.Time
+    rng               *rand.Rand
+    cooldown          time.Duration
+    maxChance         float64
+    lastRandom        time.Time
+    NewSongCh         chan struct{}
+    forceNextRadio    bool
+
+    // these hold the current “deck” for each list
+    shuffledQueue     []Song
+    shuffledIndex     int
+    shuffledRadio     []Song
+    shuffledRadioIndex int
 }
 
 func NewPlaylist(cfg *config.Config) *Playlist {
     src := rand.NewSource(time.Now().UnixNano())
     return &Playlist{
-        queue:          nil,
-        randomNext:     nil,
-        lastPlayed:     make(map[string]time.Time),
-        rng:            rand.New(src),
-        cooldown:       cfg.RandomCooldown,
-        maxChance:      cfg.RandomMaxChance,
-        NewSongCh:      make(chan struct{}, 1),
+        lastPlayed:      make(map[string]time.Time),
+        lastRadioPlayed: make(map[string]time.Time),
+        rng:             rand.New(src),
+        cooldown:        cfg.RandomCooldown,
+        maxChance:       cfg.RandomMaxChance,
+        NewSongCh:       make(chan struct{}, 1),
     }
 }
 
 func (p *Playlist) Add(song Song) {
     p.mu.Lock()
-    wasEmpty := len(p.queue) == 0
-    // only add if not already present
+    defer p.mu.Unlock()
+    // de-dupe
     for _, s := range p.queue {
         if s.ID == song.ID {
-            p.mu.Unlock()
             return
         }
     }
+    first := len(p.queue) == 0
     p.queue = append(p.queue, song)
-    p.mu.Unlock()
-
-    if wasEmpty {
+    if first {
         select { case p.NewSongCh <- struct{}{}: default: }
     }
 }
 
 func (p *Playlist) AddRadio(song Song) {
     p.mu.Lock()
-    wasEmpty := len(p.randomNext) == 0
-    // only add if not already present
+    defer p.mu.Unlock()
     for _, s := range p.randomNext {
         if s.ID == song.ID {
-            p.mu.Unlock()
             return
         }
     }
+    first := len(p.randomNext) == 0
     p.randomNext = append(p.randomNext, song)
-    p.mu.Unlock()
-
-    if wasEmpty {
+    if first {
         select { case p.NewSongCh <- struct{}{}: default: }
     }
 }
@@ -81,8 +83,7 @@ func (p *Playlist) AddRadio(song Song) {
 func (p *Playlist) Remove(id string) {
     p.mu.Lock()
     defer p.mu.Unlock()
-
-    // master queue
+    // queue
     q := p.queue[:0]
     for _, s := range p.queue {
         if s.ID != id {
@@ -90,8 +91,9 @@ func (p *Playlist) Remove(id string) {
         }
     }
     p.queue = q
+    delete(p.lastPlayed, id)
 
-    // radio segments
+    // radio
     r := p.randomNext[:0]
     for _, s := range p.randomNext {
         if s.ID != id {
@@ -99,89 +101,133 @@ func (p *Playlist) Remove(id string) {
         }
     }
     p.randomNext = r
-
-    // purge lastPlayed entry
-    delete(p.lastPlayed, id)
+    delete(p.lastRadioPlayed, id)
 }
 
-// Next returns either a forced‐next/radio segment, a cooldown‐based bump,
-// or a weighted‐random master‐queue track.
+// Next gives you the next track: forced radio, cooldown bump, or weighted master.
 func (p *Playlist) Next() (Song, bool) {
     p.mu.Lock()
     defer p.mu.Unlock()
 
     now := time.Now()
 
-    // 0) forced radio override
+    // 0) forced radio segment
     if p.forceNextRadio && len(p.randomNext) > 0 {
-        song := p.pickRandomSegment()
+        song, _ := p.popShuffledRadio(now)
         p.forceNextRadio = false
         p.lastRandom = now
         return song, true
     }
-    // 1) regular radio bump
+    // 1) cooldown‐based radio bump
     if now.Sub(p.lastRandom) >= p.cooldown && len(p.randomNext) > 0 {
-        song := p.pickRandomSegment()
+        song, _ := p.popShuffledRadio(now)
         p.lastRandom = now
         return song, true
     }
-    // 2) weighted random master queue
+    // 2) weighted master queue
     if len(p.queue) == 0 {
         return Song{}, false
     }
-    song := p.weightedRandomFromQueue(now)
-    // record play time
-    p.lastPlayed[song.ID] = now
-    return song, true
+    song, ok := p.popShuffledQueue(now)
+    return song, ok
 }
 
-// weightedRandomFromQueue does a roulette‐wheel pick with weights = time since last play.
-func (p *Playlist) weightedRandomFromQueue(now time.Time) Song {
-    type candidate struct {
-        song   Song
-        weight float64
+// popShuffledQueue refills and sorts the master deck if needed, then pops one.
+func (p *Playlist) popShuffledQueue(now time.Time) (Song, bool) {
+    if p.shuffledQueue == nil || p.shuffledIndex >= len(p.shuffledQueue) {
+        p.refillShuffledQueue(now)
     }
+    if len(p.shuffledQueue) == 0 {
+        return Song{}, false
+    }
+    s := p.shuffledQueue[p.shuffledIndex]
+    p.shuffledIndex++
+    p.lastPlayed[s.ID] = now
+    return s, true
+}
+
+// refillShuffledQueue does a weighted shuffle on queue by age*rand.
+func (p *Playlist) refillShuffledQueue(now time.Time) {
+    n := len(p.queue)
+    type entry struct {
+        song Song
+        key  float64
+    }
+    ents := make([]entry, n)
     total := 0.0
-    cands := make([]candidate, 0, len(p.queue))
-    for _, s := range p.queue {
-        last, seen := p.lastPlayed[s.ID]
-        var w float64
-        if !seen {
-            w = 1.0  // unseen tracks get base weight
-        } else {
-            w = now.Sub(last).Seconds()
-            if w < 0 {
-                w = 0
-            }
+    for i, s := range p.queue {
+        age := now.Sub(p.lastPlayed[s.ID]).Seconds()
+        if age < 1 {
+            age = 1
         }
-        cands = append(cands, candidate{s, w})
-        total += w
+        k := age * p.rng.Float64()
+        ents[i] = entry{s, k}
+        total += k
     }
-    // if all weights zero, fallback to uniform
+    // fallback if all keys zero
     if total == 0 {
-        idx := p.rng.Intn(len(cands))
-        return cands[idx].song
-    }
-    // pick a random threshold
-    r := p.rng.Float64() * total
-    for _, c := range cands {
-        r -= c.weight
-        if r <= 0 {
-            return c.song
+        for i := range ents {
+            ents[i].key = p.rng.Float64()
         }
     }
-    // rounding fallback
-    return cands[len(cands)-1].song
+    sort.Slice(ents, func(i, j int) bool {
+        return ents[i].key > ents[j].key
+    })
+    p.shuffledQueue = make([]Song, n)
+    for i, e := range ents {
+        p.shuffledQueue[i] = e.song
+    }
+    p.shuffledIndex = 0
 }
 
-// pickRandomSegment remains unchanged
-func (p *Playlist) pickRandomSegment() Song {
-    // simple uniform random from p.randomNext
-    idx := p.rng.Intn(len(p.randomNext))
-    return p.randomNext[idx]
+// popShuffledRadio refills/sorts the radio deck, then pops one.
+func (p *Playlist) popShuffledRadio(now time.Time) (Song, bool) {
+    if p.shuffledRadio == nil || p.shuffledRadioIndex >= len(p.shuffledRadio) {
+        p.refillShuffledRadio(now)
+    }
+    if len(p.shuffledRadio) == 0 {
+        return Song{}, false
+    }
+    s := p.shuffledRadio[p.shuffledRadioIndex]
+    p.shuffledRadioIndex++
+    p.lastRadioPlayed[s.ID] = now
+    return s, true
 }
 
-// ForceNextRadioSegment causes the very next Next() to pick from randomNext.
+// refillShuffledRadio does a weighted shuffle on randomNext by age*rand.
+func (p *Playlist) refillShuffledRadio(now time.Time) {
+    n := len(p.randomNext)
+    type entry struct {
+        song Song
+        key  float64
+    }
+    ents := make([]entry, n)
+    total := 0.0
+    for i, s := range p.randomNext {
+        age := now.Sub(p.lastRadioPlayed[s.ID]).Seconds()
+        if age < 1 {
+            age = 1
+        }
+        k := age * p.rng.Float64()
+        ents[i] = entry{s, k}
+        total += k
+    }
+    if total == 0 {
+        for i := range ents {
+            ents[i].key = p.rng.Float64()
+        }
+    }
+    sort.Slice(ents, func(i, j int) bool {
+        return ents[i].key > ents[j].key
+    })
+    p.shuffledRadio = make([]Song, n)
+    for i, e := range ents {
+        p.shuffledRadio[i] = e.song
+    }
+    p.shuffledRadioIndex = 0
+}
+
+// ForceNextRadioSegment makes the very next Next() call use randomNext.
 func (p *Playlist) ForceNextRadioSegment() {
     p.mu.Lock()
     p.forceNextRadio = true
